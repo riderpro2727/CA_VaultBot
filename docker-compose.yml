@@ -1,0 +1,105 @@
+version: "3.9"
+
+services:
+  # ── CA Vault Bot ────────────────────────────────────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cavault_bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - DATABASE_URL=postgresql+asyncpg://cavault:${POSTGRES_PASSWORD}@db:5432/cavault_db
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_SERVICE_ACCOUNT_JSON=/app/service_account.json
+      - GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT=${GOOGLE_SERVICE_ACCOUNT_JSON_CONTENT}
+      - INDEX_SCAN_INTERVAL_MINUTES=${INDEX_SCAN_INTERVAL_MINUTES:-10}
+      - SEARCH_RESULTS_PER_PAGE=${SEARCH_RESULTS_PER_PAGE:-5}
+      - SEARCH_FUZZY_THRESHOLD=${SEARCH_FUZZY_THRESHOLD:-65}
+      - RATE_LIMIT_SEARCHES_PER_MINUTE=${RATE_LIMIT_SEARCHES_PER_MINUTE:-20}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+    volumes:
+      - ./service_account.json:/app/service_account.json:ro
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cavault_network
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  # ── PostgreSQL Database ──────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: cavault_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cavault_db
+      POSTGRES_USER: cavault
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-strongpassword123}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cavault -d cavault_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cavault_network
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ── Redis Cache ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: cavault_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cavault_network
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  cavault_network:
+    driver: bridge
